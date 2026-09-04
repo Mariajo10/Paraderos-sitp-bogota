@@ -1,21 +1,27 @@
 <?php
-// CONFIGURACIÓN DE LA API
 
-// URL del servicio REST de ArcGIS que contiene los
-// paraderos zonales del SITP de Bogotá.
-$urlApi = "https://serviciosgis.catastrobogota.gov.co/arcgis/rest/services/Mapa_Referencia/Mapa_Referencia/MapServer/8/query";
+// ============================================================
+// CONFIGURACIÓN DEL MÓDULO PYTHON
+// ============================================================
 
-// Array donde guardaremos los resultados de la API.
+// PHP se comunica con Python mediante este endpoint Flask.
+$urlPython = "http://127.0.0.1:5000/api/paraderos";
+
+
+// ============================================================
+// VARIABLES
+// ============================================================
+
 $resultados = [];
 
-// Mensaje para mostrar errores o información al usuario.
 $mensaje = "";
 
-// Variable para saber si hubo una consulta.
 $consultaRealizada = false;
 
-// LISTA DE LOCALIDADES
 
+// ============================================================
+// LISTA DE LOCALIDADES
+// ============================================================
 
 $localidades = [
     "Antonio Nariño",
@@ -39,25 +45,32 @@ $localidades = [
     "Usme"
 ];
 
-// DATOS DEL FORMULARIO
 
-// Recuperamos la localidad enviada por el usuario.
+// ============================================================
+// DATOS DEL FORMULARIO
+// ============================================================
+
 $localidad = isset($_GET["localidad"])
     ? trim($_GET["localidad"])
     : "";
 
-// Recuperamos el texto utilizado para buscar un paradero.
 $nombreParadero = isset($_GET["nombre"])
     ? trim($_GET["nombre"])
     : "";
 
+
+// ============================================================
 // PROCESAMIENTO DEL FORMULARIO
+// ============================================================
 
 if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
 
     $consultaRealizada = true;
 
+
+    // ========================================================
     // VALIDACIÓN DE LA LOCALIDAD
+    // ========================================================
 
     if ($localidad === "") {
 
@@ -69,103 +82,106 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
 
     } else {
 
-        // CONSTRUCCIÓN DEL FILTRO PARA LA API
+
+        // ====================================================
+        // PREPARAR DATOS PARA PYTHON
+        // ====================================================
 
         /*
-         * Primero filtramos por localidad.
-         * Después, si el usuario escribió un nombre o dirección,
-         * agregamos un filtro LIKE para encontrar coincidencias.
+         * PHP envía a Python:
+         *
+         * localidad
+         * nombre (opcional)
+         *
+         * Python será el encargado de consultar IDECA.
          */
 
-        $where = "LOCALIDAD = '" . addslashes($localidad) . "'";
-
-        // Si el usuario escribió algo en el buscador,
-        // buscamos ese texto dentro del nombre del paradero
-        // o dentro de la dirección.
-        if ($nombreParadero !== "") {
-
-            $textoBusqueda = addslashes($nombreParadero);
-
-            $where .= " AND (NOMBRE LIKE '%"
-                . $textoBusqueda
-                . "%' OR DIRECCION_ LIKE '%"
-                . $textoBusqueda
-                . "%')";
-        }
-
-        // PARÁMETROS PARA LA API
-
-        $parametros = [
-            "where" => $where,
-
-            // Campos que necesitamos mostrar en la tabla.
-            "outFields" =>
-                "CENEFA,NOMBRE,DIRECCION_,LOCALIDAD,LATITUD,LONGITUD",
-
-            // No necesitamos la geometría porque
-            // ya tenemos latitud y longitud.
-            "returnGeometry" => "false",
-
-            // Solicitamos la respuesta en formato GeoJSON.
-            "f" => "geojson"
+        $parametrosPython = [
+            "localidad" => $localidad
         ];
 
-        // Construimos la URL final.
+
+        // Si existe un filtro de nombre,
+        // también se envía a Python.
+        if ($nombreParadero !== "") {
+
+            $parametrosPython["nombre"] = $nombreParadero;
+        }
+
+
+        // ====================================================
+        // CONSTRUIR URL DE PYTHON
+        // ====================================================
+
         $urlConsulta =
-            $urlApi . "?" . http_build_query($parametros);
+            $urlPython . "?" . http_build_query($parametrosPython);
 
 
-        // CONSUMO DE LA API
+        // ====================================================
+        // CONSULTAR PYTHON
+        // ====================================================
 
         /*
-         * file_get_contents() realiza la petición HTTP
-         * al servicio REST de ArcGIS.
+         * PHP realiza una petición HTTP al módulo
+         * desarrollado con Python + Flask.
          */
+
         $respuesta = @file_get_contents($urlConsulta);
 
-        // Verificamos si la API respondió.
+
+        // ====================================================
+        // VERIFICAR RESPUESTA
+        // ====================================================
+
         if ($respuesta === false) {
 
             $mensaje =
-                "No fue posible consultar el servicio del SITP en este momento.";
+                "No fue posible conectarse con el módulo Python. "
+                . "Verifica que Flask esté ejecutándose en el puerto 5000.";
 
         } else {
 
-            // DECODIFICACIÓN DEL JSON
 
-            /*
-             * json_decode() convierte la respuesta JSON/GeoJSON
-             * en un arreglo asociativo de PHP.
-             */
+            // =================================================
+            // CONVERTIR JSON DE PYTHON A ARRAY PHP
+            // =================================================
+
             $datos = json_decode($respuesta, true);
 
-            // Verificamos que la respuesta sea válida.
+
+            // Verificar que el JSON sea válido.
             if ($datos === null) {
 
                 $mensaje =
-                    "La respuesta de la API no tiene un formato válido.";
+                    "El módulo Python devolvió una respuesta no válida.";
 
             } elseif (isset($datos["error"])) {
 
                 $mensaje =
-                    "La API informó un error al realizar la consulta.";
+                    "Python informó un error: "
+                    . ($datos["error"] ?? "Error desconocido.");
 
-            } elseif (!isset($datos["features"])) {
+            } elseif (!isset($datos["paraderos"])) {
 
                 $mensaje =
-                    "La API no devolvió resultados.";
+                    "El módulo Python no devolvió el listado de paraderos.";
 
             } else {
 
-                // GUARDAR RESULTADOS
-                /*
-                 * GeoJSON guarda los resultados dentro
-                 * del arreglo "features".
-                 */
-                $resultados = $datos["features"];
 
-                // Si el arreglo está vacío significa que
-                // no encontramos coincidencias.
+                // =============================================
+                // GUARDAR LOS RESULTADOS
+                // =============================================
+
+                /*
+                 * Python ya procesó la información de IDECA
+                 * y entrega directamente el arreglo "paraderos".
+                 */
+
+                $resultados = $datos["paraderos"];
+
+
+                // Verificar si hubo resultados.
                 if (count($resultados) === 0) {
 
                     $mensaje =
@@ -1058,10 +1074,8 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
 
 
                             <?php
-
-                            // Obtenemos los atributos del paradero.
-                            $atributos =
-                                $paradero["properties"];
+                             // Python ya entrega los datos procesados directamente.
+                                $atributos = $paradero;
 
                             ?>
 
@@ -1076,7 +1090,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
                                     </span>
 
                                     <?= htmlspecialchars(
-                                        $atributos["NOMBRE"]
+                                        $atributos["nombre"]
                                         ?? "Sin información"
                                     ) ?>
 
@@ -1086,7 +1100,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
                                 <td>
 
                                     <?= htmlspecialchars(
-                                        $atributos["DIRECCION_"]
+                                        $atributos["direccion"]
                                         ?? "Sin información"
                                     ) ?>
 
@@ -1096,7 +1110,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
                                 <td>
 
                                     <?= htmlspecialchars(
-                                        $atributos["LOCALIDAD"]
+                                        $atributos["localidad"]
                                         ?? "Sin información"
                                     ) ?>
 
@@ -1106,7 +1120,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
                                 <td class="coordenada">
 
                                     <?= htmlspecialchars(
-                                        $atributos["LATITUD"]
+                                        $atributos["latitud"]
                                         ?? "Sin información"
                                     ) ?>
 
@@ -1116,7 +1130,7 @@ if ($_SERVER["REQUEST_METHOD"] === "GET" && isset($_GET["localidad"])) {
                                 <td class="coordenada">
 
                                     <?= htmlspecialchars(
-                                        $atributos["LONGITUD"]
+                                        $atributos["longitud"]
                                         ?? "Sin información"
                                     ) ?>
 
